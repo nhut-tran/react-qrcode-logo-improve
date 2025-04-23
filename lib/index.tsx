@@ -34,12 +34,44 @@ export interface IProps {
     eyeColor?: EyeColor | [EyeColor, EyeColor, EyeColor];
     qrStyle?: 'squares' | 'dots' | 'fluid';
     style?: React.CSSProperties;
+    borderColor?: string,
+    borderWidth?: number,
+    qrShape?: 'square' | 'rounded' | 'circle'
     id?: string;
 }
 
 interface ICoordinates {
     row: number;
     col: number;
+}
+function cssToCanvasGradient(ctx, cssGradient, width, height) {
+    const gradientMatch = cssGradient.match(/linear-gradient\((\d+)deg,\s*(.*)\)/i);
+    if (!gradientMatch) {
+        throw new Error("Invalid CSS gradient format");
+    }
+
+    const angle = parseInt(gradientMatch[1], 10);
+    const colorStops = gradientMatch[2].split(/,(?![^()]*\))/).map(stop => stop.trim());
+
+    // Convert angle to canvas coordinates
+    const radians = (90 - angle) * (Math.PI / 180);
+    const x0 = Math.cos(radians) * width;
+    const y0 = Math.sin(radians) * height;
+    const x1 = width - x0;
+    const y1 = height - y0;
+    
+    const gradient = ctx.createLinearGradient(x0, y0, x1, y1);
+    
+    colorStops.forEach(stop => {
+        const parts = stop.match(/rgba?\((.*?)\)\s*(\d+)%?/i);
+        if (parts) {
+            const color = `rgba(${parts[1]})`;
+            const position = parseFloat(parts[2]) / 100;
+            gradient.addColorStop(position, color);
+        }
+    });
+    
+    return gradient;
 }
 
 export class QRCode extends React.Component<IProps, {}> {
@@ -57,7 +89,10 @@ export class QRCode extends React.Component<IProps, {}> {
         logoOpacity: 1,
         qrStyle: 'squares',
         eyeRadius: [0, 0, 0],
-        logoPaddingStyle: 'square'
+        logoPaddingStyle: 'square',
+        borderColor: 'transparent',
+        borderWidth: 0,
+        qrShape: 'square'
     };
 
     public download(fileType?: 'png' | 'jpg' | 'webp', fileName?: string) {
@@ -99,6 +134,38 @@ export class QRCode extends React.Component<IProps, {}> {
             }
         }
         return out;
+    }
+    private createCanvasGradient = function (ctx, type, position, colorStops, width, height) {
+        let gradient;
+        if (type === "linear") {
+            // Convert angle to canvas coordinates
+            const angle = position.angle;
+            const radians = (90 - angle) * (Math.PI / 180);
+            const x0 = Math.cos(radians) * width;
+            const y0 = Math.sin(radians) * height;
+            const x1 = width - x0;
+            const y1 = height - y0;
+            gradient = ctx.createLinearGradient(x0, y0, x1, y1);
+        } else if (type === "radial") {
+            // Use center and radius for radial gradient
+            const { x, y, r } = position;
+            gradient = ctx.createRadialGradient(x * width, y * height, 0, x * width, y * height, r * Math.min(width, height));
+        }
+        
+        colorStops.forEach(stop => {
+            const position = stop.left / 100;
+            gradient.addColorStop(position, stop.value);
+        });
+        
+        return gradient;
+    }
+    private drawCircle(lineWidth: number, lineColor: string, x: number, y: number, radius: number, fill: boolean ,ctx: CanvasRenderingContext2D) {
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth =  lineWidth;
+        ctx.arc(x, y, radius, 0, 2 * Math.PI);
+        ctx.stroke();
+        if(fill)
+            ctx.fill();
     }
 
     /**
@@ -269,12 +336,15 @@ export class QRCode extends React.Component<IProps, {}> {
             qrStyle,
             eyeRadius,
             eyeColor,
-            logoPaddingStyle
+            logoPaddingStyle,
+            qrShape,
+            borderColor,
+            borderWidth
         } = this.props;
 
         // just make sure that these params are passed as numbers
         const size = +this.props.size;
-        const quietZone = +this.props.quietZone;
+        let quietZone = +this.props.quietZone;
         const logoWidth = this.props.logoWidth ? +this.props.logoWidth : 0;
         const logoHeight = this.props.logoHeight ? +this.props.logoHeight : 0;
         const logoPadding = this.props.logoPadding ? +this.props.logoPadding : 0;
@@ -285,16 +355,30 @@ export class QRCode extends React.Component<IProps, {}> {
 
         const canvas: HTMLCanvasElement = this.canvasRef?.current;
         const ctx: CanvasRenderingContext2D = canvas.getContext('2d');
-
-        const canvasSize = size + (2 * quietZone);
+        let additionalquiteZoneForCircleOrRoundedBorder = 0;
+        if(qrShape == 'circle') {
+            additionalquiteZoneForCircleOrRoundedBorder = size*Math.sqrt(2)/2 - size/2;
+        } else if(qrShape == 'rounded') {
+            additionalquiteZoneForCircleOrRoundedBorder = 10;
+        }
+        if(borderWidth && !quietZone || quietZone < additionalquiteZoneForCircleOrRoundedBorder)
+            quietZone += quietZone + borderWidth + additionalquiteZoneForCircleOrRoundedBorder;
+        const canvasSize = size + (2 * quietZone) + borderWidth * 2;;
         const length = qrCode.getModuleCount();
-        const cellSize = size / length;
+        const cellSize = (size + (borderWidth * 2)) / length;
         const scale = (window.devicePixelRatio || 1);
         canvas.height = canvas.width = canvasSize * scale;
         ctx.scale(scale, scale);
-
         ctx.fillStyle = bgColor;
-        ctx.fillRect(0, 0, canvasSize, canvasSize);
+        if(qrShape == 'circle') {
+            this.drawCircle(borderWidth, bgColor, (canvasSize) / 2, (canvasSize) / 2, (canvasSize - borderWidth) / 2, true, ctx);
+        } else if(qrShape == 'rounded') { 
+            this.drawRoundedSquare(borderWidth, 0, 0, canvasSize, bgColor, 50, true, ctx);
+            
+            
+        } else if(qrShape == 'square') { 
+            ctx.fillRect(0, 0, canvasSize, canvasSize);
+        }
 
         const offset = quietZone;
 
@@ -404,8 +488,8 @@ export class QRCode extends React.Component<IProps, {}> {
 
                 const dWidthLogo = logoWidth || size * 0.2;
                 const dHeightLogo = logoHeight || dWidthLogo;
-                const dxLogo = ((size - dWidthLogo) / 2);
-                const dyLogo = ((size - dHeightLogo) / 2);
+                const dxLogo = ((size - dWidthLogo) / 2) + borderWidth;
+                const dyLogo = ((size - dHeightLogo) / 2) + borderWidth;
 
                 if (removeQrCodeBehindLogo || logoPadding) {
                     ctx.beginPath();
@@ -438,10 +522,37 @@ export class QRCode extends React.Component<IProps, {}> {
             };
             image.src = logoImage;
         }
+        if(borderWidth > 0) {
+            ctx.beginPath();
+            if(qrShape == 'circle') {
+                this.drawCircle(borderWidth, borderColor, (canvasSize)/2, (canvasSize)/2, (canvasSize - borderWidth)/2, false, ctx)
+            } else if(qrShape == 'rounded') {
+                this.drawRoundedSquare(
+                    borderWidth,
+                   0,
+                    0,
+                    canvasSize,
+                    borderColor,
+                    50,
+                    false,
+                    ctx);
+            } else if(qrShape == 'square') {
+                    this.drawRoundedSquare(
+                        borderWidth,
+                       0,
+                        0,
+                        canvasSize,
+                        borderColor,
+                        0,
+                        false,
+                        ctx);
+            }
+        }
+        
     }
 
     render() {
-        const qrSize = +this.props.size + (2 * +this.props.quietZone);
+        const qrSize = +this.props.size + (2 * +this.props.quietZone) + (2 * this.props.borderWidth);
 
         return <canvas
             id={this.props.id ?? 'react-qrcode-logo'}
@@ -452,3 +563,4 @@ export class QRCode extends React.Component<IProps, {}> {
         />;
     }
 }
+
